@@ -5,3 +5,9 @@ __pycache__/
 *.dzi
 /parsed.tsv
 /groups.json
+.venv/
+/filelist.txt
+.DS_Store
+# symlinks to the build artifacts, and scratch output (all regenerable)
+/gm_files
+/location_prefixes_candidates.txt

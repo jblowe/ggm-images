@@ -1,0 +1,65 @@
+# Locative connectives used in parsing/matching.
+#
+# When a filename has text BETWEEN the date and the Locke number, e.g.
+#   "2015 - December 13 - south of P152 Gujī Bāhā 2"
+# the photo should still be grouped under that Locke (P152). The parser accepts
+# the Locke if the intervening text ENDS WITH one of the phrases below (so
+# "uma maheswar temple just south of" matches on "south of").
+#
+# One phrase per line, lowercase. Blank lines and lines starting with # ignored.
+# Edit freely: add/remove phrases, then rerun  build_authority.py --refresh
+# (the file list is unaffected; only parsing/matching changes).
+
+# --- directional ---
+south of
+north of
+east of
+west of
+northeast of
+northwest of
+southeast of
+southwest of
+to the south of
+to the north of
+to the east of
+to the west of
+
+# --- proximity ---
+near
+next to
+beside
+adjacent to
+opposite
+behind
+in front of
+across from
+across the street from
+on the street outside
+between
+in or around
+around
+
+# --- containment / position ---
+outside
+outside of
+inside
+inside of
+within
+atop
+above
+below
+in the courtyard of
+courtyard of
+
+# --- partitive (subject is a part/remnant/feature of the site) ---
+part of
+eastern part of
+western part of
+remains of
+detail of
+torana of
+torana at
+hiti at
+caitya at
+caitya outside
+stupa at

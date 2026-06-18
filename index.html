@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gregory Maskarinec Photo Archive — Geographic Mosaic</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #111; color: #eee;
+    font: 14px/1.4 system-ui, sans-serif; }
+  header { padding: 8px 12px; }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  #osd { width: 100%; height: calc(100% - 40px); background: #000; }
+</style>
+</head>
+<body>
+  <header><h1>Gregory Maskarinec Photo Archive — photos grouped by location</h1></header>
+  <div id="osd"></div>
+  <script src="openseadragon/openseadragon.min.js"></script>
+  <script>
+    OpenSeadragon({
+      id: "osd",
+      prefixUrl: "openseadragon/images/",
+      tileSources: "gm.dzi",
+      showNavigator: true,
+      navigatorPosition: "BOTTOM_RIGHT",
+      minZoomImageRatio: 0.5,
+      maxZoomPixelRatio: 4,
+      gestureSettingsMouse: { clickToZoom: true, dblClickToZoom: true }
+    });
+  </script>
+</body>
+</html>

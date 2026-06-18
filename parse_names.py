@@ -40,6 +40,71 @@ THUMB_RE = re.compile(r"\.thumbnail.*\.jpg$", re.IGNORECASE)
 
 CITY_BY_LOCKE = (("K", "Kathmandu"), ("P", "Patan"), ("B", "Bhaktapur"))
 
+# date prefix:  YYYY [-] Month [DD] -    (whitespace already normalized to singles)
+# year may be 2 or 4 digits ("10 - October 24 - ...")
+DATE_RE = re.compile(r"^(\d{2,4}) ?-? ?([A-Za-z]+)\.? ?(\d{1,2})? ?-+ ?")
+# Locke catalog tokens are all K/P/B + digits (verified: max is 1-3 digits).
+# Tolerate a space inside ("K 14"->K14), a letter suffix ("K44e"->K44), and a
+# missing following space ("P113Nuga"->P113). Guard against false positives:
+#   (?!\d)  the digit run is <=3, so a 4-digit YEAR is never grabbed (P2010)
+#   (?!-?\d) the token is not followed by -digits, i.e. a "B09-36" batch code
+LOCKE_RE = re.compile(r"\b([KPB]) *(\d{1,3})(?!\d)[a-z]*(?!-?\d)")
+TRAIL_NUM = re.compile(r" *(\d+) *$")
+
+_PREFIX_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "location_prefixes.txt")
+
+
+def _load_connectives(path: str = _PREFIX_FILE) -> tuple[str, ...]:
+    """Locative phrases that may sit between the date and the Locke number."""
+    out = []
+    try:
+        for line in open(path, encoding="utf-8"):
+            line = line.strip()
+            if line and not line.startswith("#"):
+                out.append(line.lower())
+    except FileNotFoundError:
+        pass
+    # longest first so the most specific connective wins on endswith()
+    return tuple(sorted(set(out), key=len, reverse=True))
+
+
+CONNECTIVES = _load_connectives()
+
+
+def parse_stem(stem: str):
+    """Return (year, month_day, lockenumber, location, imagenumber) from a stem.
+
+    Whitespace is normalized first (fixes double-spaces around dashes). The Locke
+    number is accepted even when preceded by locative text, provided that text
+    ends with a known connective (see location_prefixes.txt)."""
+    s = re.sub(r"\s+", " ", stem).strip()
+    # A leading date is optional: many names put it at the end ("..., 12 Nov.")
+    # or omit it. Strip it when present; otherwise search the whole stem.
+    md = DATE_RE.match(s)
+    if md:
+        year, month, day = md.group(1), md.group(2), md.group(3) or ""
+        rest = s[md.end():].strip(" -,")
+    else:
+        year, month, day = "", "", ""
+        rest = s
+
+    imgnum = ""
+    tn = TRAIL_NUM.search(rest)
+    if tn:
+        imgnum, rest = tn.group(1), rest[:tn.start()].strip(" -,")
+
+    locke, location = "", rest
+    lm = LOCKE_RE.search(rest)
+    if lm:
+        pre = rest[:lm.start()].strip(" -,").lower()
+        if pre == "" or any(pre.endswith(c) for c in CONNECTIVES):
+            locke = lm.group(1) + lm.group(2)
+            location = rest[lm.end():].strip(" -,")
+
+    month_day = f"{month} {day}".strip()
+    return year, month_day, locke, location, imgnum
+
 
 @dataclass
 class Record:
@@ -53,6 +118,7 @@ class Record:
     filename: str = ""        # basename including extension
     top: str = ""             # collection (first path component, normalized)
     path: str = ""            # /ggm-images/<original path>
+    file: str = ""            # resolved absolute path on disk
 
 
 def parse_path(raw: str) -> Record:
@@ -66,14 +132,12 @@ def parse_path(raw: str) -> Record:
 
     rec = Record(filename=filename, title=stem, path=f"/ggm-images{full}")
 
-    m = NAME_RE.match(stem)
-    if m:
-        year, month, day, locke, location, imgnum = m.groups()
-        rec.year = year or ""
-        rec.month_day = f"{month} {day}" if (month or day) else ""
-        rec.lockenumber = locke or ""
-        rec.location = location or ""
-        rec.imagenumber = imgnum or ""
+    year, month_day, locke, location, imgnum = parse_stem(stem)
+    rec.year = year
+    rec.month_day = month_day
+    rec.lockenumber = locke
+    rec.location = location
+    rec.imagenumber = imgnum
 
     # collection (top): first path component, with parse.pl's normalizations
     mtop = re.match(r"^/(.*?)/", full)
@@ -97,7 +161,10 @@ def read_paths(args) -> list[str]:
         paths = []
         for dirpath, _dirs, files in os.walk(root):
             for fn in files:
-                if fn.lower().endswith(".thumbnail.jpg"):
+                # NB: an NFC-normalization pass renamed many files to
+                # "*.thumbnail (nfc).jpg" -- those are the Locke-bearing catalog,
+                # so both suffixes must be matched or 13k+ photos vanish.
+                if fn.lower().endswith((".thumbnail.jpg", ".thumbnail (nfc).jpg")):
                     full = os.path.join(dirpath, fn)
                     # make path relative to root, leading slash (parse.pl convention)
                     rel = os.path.relpath(full, root)
@@ -112,6 +179,17 @@ def read_paths(args) -> list[str]:
 # ---------------------------------------------------------------------------
 
 UNKNOWN = "Unknown"
+UNKNOWN_PREFIX = "Unknown: "
+
+
+def unknown_key(rec: Record) -> str:
+    """Key for a location-less photo: 'Unknown: ' + first 3 filename tokens."""
+    toks = rec.title.split()
+    return (UNKNOWN_PREFIX + " ".join(toks[:3])) if toks else UNKNOWN
+
+
+def is_unknown(key: str) -> bool:
+    return key == UNKNOWN or key.startswith(UNKNOWN_PREFIX)
 
 
 @dataclass
@@ -133,7 +211,7 @@ def build_groups(records: list[Record]) -> list[Group]:
     locke_sets: dict[str, set[str]] = defaultdict(set)
 
     for rec in records:
-        key = rec.location if rec.location else UNKNOWN
+        key = rec.location if rec.location else unknown_key(rec)
         g = by_key.get(key)
         if g is None:
             g = by_key[key] = Group(key=key)
@@ -144,14 +222,13 @@ def build_groups(records: list[Record]) -> list[Group]:
     for key, g in by_key.items():
         lockes = sorted(locke_sets.get(key, ()))
         g.lockenumbers = lockes
-        display = UNKNOWN if key == UNKNOWN else key
         if lockes:
-            g.label = f"{display} ({', '.join(lockes)})"
+            g.label = f"{key} ({', '.join(lockes)})"
         else:
-            g.label = display
+            g.label = key
 
-    # alphabetical by location key, but force Unknown to the end
-    groups = sorted(by_key.values(), key=lambda g: (g.key == UNKNOWN, g.key.lower()))
+    # alphabetical by location key, with all Unknown:* blocks clustered at the end
+    groups = sorted(by_key.values(), key=lambda g: (is_unknown(g.key), g.key.lower()))
     return groups
 
 
@@ -182,16 +259,16 @@ def write_json(groups: list[Group], path: str) -> None:
 
 def print_stats(records: list[Record], groups: list[Group]) -> None:
     total = len(records)
-    unknown = next((g for g in groups if g.key == UNKNOWN), None)
-    unknown_n = unknown.count if unknown else 0
-    real = [g for g in groups if g.key != UNKNOWN]
+    unknown_groups = [g for g in groups if is_unknown(g.key)]
+    unknown_n = sum(g.count for g in unknown_groups)
+    real = [g for g in groups if not is_unknown(g.key)]
     counts = sorted(g.count for g in real)
 
     def pct(n): return f"{100*n/total:.1f}%" if total else "0%"
 
     print(f"photos parsed         : {total}")
-    print(f"distinct locations    : {len(real)}  (+ Unknown)")
-    print(f"Unknown (no location) : {unknown_n}  ({pct(unknown_n)})")
+    print(f"distinct locations    : {len(real)}")
+    print(f"Unknown blocks        : {len(unknown_groups)}  ({unknown_n} photos, {pct(unknown_n)})")
     if counts:
         med = counts[len(counts)//2]
         print(f"photos/location       : min={counts[0]} median={med} max={counts[-1]}")
