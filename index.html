@@ -7,13 +7,18 @@
 <style>
   html, body { margin: 0; height: 100%; background: #111; color: #eee;
     font: 14px/1.4 system-ui, sans-serif; }
-  header { padding: 8px 12px; }
+  header { padding: 8px 12px; display: flex; align-items: baseline; gap: 16px; }
   header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header a { margin-left: auto; color: #6aa9ff; text-decoration: none; font-weight: 600; }
+  header a:hover { text-decoration: underline; }
   #osd { width: 100%; height: calc(100% - 40px); background: #000; }
 </style>
 </head>
 <body>
-  <header><h1>Gregory Maskarinec Photo Archive — photos grouped by location</h1></header>
+  <header>
+    <h1>Gregory Maskarinec Photo Archive — zoomable mosaic</h1>
+    <a href="https://jblowe.github.io/ggm-images/">Browse by location ↗</a>
+  </header>
   <div id="osd"></div>
   <script src="openseadragon/openseadragon.min.js"></script>
   <script>

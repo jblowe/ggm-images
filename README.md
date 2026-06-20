@@ -101,17 +101,22 @@ Generated / git-ignored: `site/locations.json`, `site/extras.json`, `site/imgbas
 
 ### Deploying to GitHub Pages
 
-Two front-ends, two scripts. **Both publish to the `gh-pages` root, so they're
-one-at-a-time for now** (hosting both would mean subdirs + a landing page — a later
-follow-up). Each force-pushes an orphan `gh-pages` (one commit, no history bloat).
+Two front-ends, **two separate Pages sites in two repos**, cross-linked in their
+headers. Splitting them avoids the gh-pages-root collision (each site owns its own
+repo) and keeps the 832 MB of tiles out of the browse-site repo. Both deploy
+scripts live here; each force-pushes an orphan `gh-pages` (one commit, no history
+bloat).
 
-| Front-end | Command | Size | Notes |
-|---|---|--:|---|
-| DeepZoom **mosaic** | `./deploy_mosaic.sh` | ~831 MB | self-contained (viewer + tiles, same-origin, no CORS); fits the 1 GB Pages cap at the default `--row-height 2200` |
-| **browse-site** | `./deploy_site.sh` | ~9 MB | images load from S3 (below) |
+| Front-end | Command | Repo / URL | Size | Notes |
+|---|---|---|--:|---|
+| DeepZoom **mosaic** | `./deploy_mosaic.sh` | `jblowe/ggm-mosaic` → `…/ggm-mosaic/` | ~832 MB | self-contained (viewer + tiles, same-origin, no CORS); fits the 1 GB Pages cap at the default `--row-height 2200`. Built here, pushed to the ggm-mosaic repo. |
+| **browse-site** | `./deploy_site.sh` | `jblowe/ggm-images` → `…/ggm-images/` | ~9 MB | images load from S3 (below) |
 
-One-time: **Settings → Pages → branch `gh-pages` / `(root)`** → live at
-`https://jblowe.github.io/ggm-images/`.
+Cross-links: the browse-site header links to **Zoom mosaic ↗**; the mosaic viewer
+links back to **Browse by location ↗**.
+
+One-time, per repo: **Settings → Pages → branch `gh-pages` / `(root)`** → live at
+`https://jblowe.github.io/ggm-images/` and `https://jblowe.github.io/ggm-mosaic/`.
 
 ### Browse-site images (public-read S3)
 
@@ -168,8 +173,8 @@ aws s3 sync ~/image_repos/ggm-images s3://ggm-thumbnails/ggm-thumbs/ \
 | `master_list.py` | Per-photo census → `build/master_list.tsv` (included/excluded, status, locke, submosaic, location, nfd_differs). |
 | `build_authority.py` | Bootstrap/validate canonical names (variant-merge stats). Standalone — no dedup/recovery. |
 | `mine_prefixes.py` | Mine candidate connectives from parked photos. |
-| `deploy_mosaic.sh` | Publish the DeepZoom mosaic (viewer + tiles) to `gh-pages`. |
-| `deploy_site.sh` | Publish the browse-site to `gh-pages`. |
+| `deploy_mosaic.sh` | Publish the DeepZoom mosaic (viewer + tiles) to the **`jblowe/ggm-mosaic`** gh-pages. |
+| `deploy_site.sh` | Publish the browse-site to this repo's (**`ggm-images`**) gh-pages. |
 
 ## Artifacts (in `build/`, git-ignored)
 

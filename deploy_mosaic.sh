@@ -5,18 +5,21 @@
 # so it runs on Pages with no server and no CORS. It must stay under the 1 GB
 # Pages cap -- rebuild with a smaller --row-height if du says otherwise.
 #
+# The mosaic is its OWN Pages site, in a SEPARATE repo (jblowe/ggm-mosaic), so it
+# never collides with the browse-site (this repo's gh-pages, via deploy_site.sh).
+# We build the tiles here but push them to ggm-mosaic's gh-pages.
+#
 # Publishes to the branch ROOT: index.html (OpenSeadragon viewer), openseadragon/,
 # gm.dzi, gm_files/. gh-pages is an orphan branch reset each deploy (one commit),
 # so the 700 MB+ of tiles never accumulate in history.
 #
-# NB: deploy_site.sh also targets gh-pages root -- they're mutually exclusive for
-# now. (Hosting both at once would mean subdirs + a landing page; revisit later.)
-#
-# One-time: Settings -> Pages -> branch gh-pages / (root).
+# One-time: in jblowe/ggm-mosaic, Settings -> Pages -> branch gh-pages / (root).
 #
 # Usage:  ./deploy_mosaic.sh
 set -euo pipefail
 cd "$(dirname "$0")"
+
+REMOTE="https://github.com/jblowe/ggm-mosaic.git"
 
 [ -f build/gm.dzi ]   || { echo "build/gm.dzi missing -- run build_mosaic.py first"; exit 1; }
 [ -d build/gm_files ] || { echo "build/gm_files missing -- run build_mosaic.py first"; exit 1; }
@@ -45,8 +48,8 @@ touch "$WT/.nojekyll"
   git add -A
   git -c user.name="John B. Lowe" -c user.email="johnblowe@gmail.com" \
       commit -q -m "Publish mosaic $(date -u +%Y-%m-%dT%H:%MZ)"
-  git push -f origin "HEAD:gh-pages"
+  git push -f "$REMOTE" "HEAD:gh-pages"
 )
 git worktree remove --force "$WT"
 git branch -D "$TMP" 2>/dev/null || true
-echo "deployed mosaic -> https://jblowe.github.io/ggm-images/  (enable Pages on gh-pages / if not already)"
+echo "deployed mosaic -> https://jblowe.github.io/ggm-mosaic/  (enable Pages on gh-pages / in jblowe/ggm-mosaic if not already)"
