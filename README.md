@@ -1,7 +1,7 @@
 # GGM geographic photo mosaic
 
 A zoomable mosaic of the **Gregory Maskarinec photo archive**, with photos grouped
-by location (Locke number) into labeled sub-mosaics, justified into a ~16:9 canvas
+by location (Locke Number) into labeled sub-mosaics, justified into a ~16:9 canvas
 and served as DeepZoom tiles via [OpenSeadragon](https://openseadragon.github.io/).
 
 Everything is driven off the live thumbnail repo — no database, no committed
@@ -47,17 +47,17 @@ images ─▶ ggm_data(filelist) ─▶ parse_names(fields) ─▶ build_locke_g
         (dedup + group + recover) ─▶ build_mosaic(render + dzsave) ─▶ OpenSeadragon
 ```
 
-| Stage | Module | What it does |
-|---|---|---|
-| 0. File list | `ggm_data.py` | Walks the repo, writes/maintains `filelist.txt`; `load_records()` parses each path into a `Record`. |
-| 1. Parse | `parse_names.py` | Per filename: NFD-normalize → strip leading date → extract **Locke** (`K/P/B`+digits; tolerant of `K 14`, `K44e`, prefixes) → **location**, **image number** → strip trailing date. |
-| 2. Group | `build_mosaic.build_locke_groups()` | **Dedup** copies → group by Locke (clean canonical name) → **recover** parked photos by wordspotting against the canonicals. |
-| 3. Render | `build_mosaic.py` | Photos justified by native width (no letterbox) + captions; centered labels, borders; blocks justified into 16:9; `vips dzsave` → tiles. |
-| 4. View | `index.html` | OpenSeadragon, fits the whole image on open. |
+| Stage        | Module | What it does |
+|--------------|---|---|
+| 0._File_list | `ggm_data.py` | Walks the repo, writes/maintains `filelist.txt`; `load_records()` parses each path into a `Record`. |
+| 1. Parse     | `parse_names.py` | Per filename: NFD-normalize → strip leading date → extract **Locke** (`K/P/B`+digits; tolerant of `K 14`, `K44e`, prefixes) → **location**, **image number** → strip trailing date. |
+| 2. Group     | `build_mosaic.build_locke_groups()` | **Dedup** copies → group by Locke (clean canonical name) → **recover** parked photos by wordspotting against the canonicals. |
+| 3. Render    | `build_mosaic.py` | Photos justified by native width (no letterbox) + captions; centered labels, borders; blocks justified into 16:9; `vips dzsave` → tiles. |
+| 4. View      | `index.html` | OpenSeadragon, fits the whole image on open. |
 
-### Locke grouping & recovery
+### Locke Number grouping & recovery
 
-- A photo is **included** if its filename parses a Locke number (`P59 Kwā Bāhā 42`).
+- A photo is **included** if its filename parses a Locke Number (`P59 Kwā Bāhā 42`).
 - **Dedup** removes duplicate copies of the same photo across collections
   (accent-insensitive filename key, e.g. `Kwā Bāhā 42` == `Kwa Bāhā 42`).
 - **Recovery** is a second pass: a parked (no-Locke) photo is assigned to a Locke
@@ -99,53 +99,42 @@ python3 -m http.server 8099
 Files: `build_site.py`, `site/{index,extras}.html`, `site/style.css`, `site/app.js`.
 Generated / git-ignored: `site/locations.json`, `site/extras.json`, `site/imgbase`.
 
-### Deploying to production (images on S3 + CloudFront, site on Pages)
+### Deploying to GitHub Pages
 
-Host the **existing thumbnails as-is** (no regeneration) on S3 behind CloudFront,
-and the lightweight site on GitHub Pages. The `<img>` tags load images
-cross-origin from CloudFront, which needs **no CORS** config.
+Two front-ends, two scripts. **Both publish to the `gh-pages` root, so they're
+one-at-a-time for now** (hosting both would mean subdirs + a landing page — a later
+follow-up). Each force-pushes an orphan `gh-pages` (one commit, no history bloat).
 
-**1. Sync the thumbnails to S3** (idempotent; ~2.6 GB, ~42k objects):
+| Front-end | Command | Size | Notes |
+|---|---|--:|---|
+| DeepZoom **mosaic** | `./deploy_mosaic.sh` | ~831 MB | self-contained (viewer + tiles, same-origin, no CORS); fits the 1 GB Pages cap at the default `--row-height 2200` |
+| **browse-site** | `./deploy_site.sh` | ~9 MB | images load from S3 (below) |
+
+One-time: **Settings → Pages → branch `gh-pages` / `(root)`** → live at
+`https://jblowe.github.io/ggm-images/`.
+
+### Browse-site images (public-read S3)
+
+The browse-site is tiny but references ~36k thumbnails, so those live on S3, served
+**public-read** (these are public archive photos). `IMG_BASE` in `site/app.js`
+points straight at the S3 endpoint:
 
 ```sh
+# sync the thumbnails as-is (idempotent; ~2.6 GB, ~42k objects)
 aws s3 sync ~/image_repos/ggm-images s3://ggm-thumbnails/ggm-thumbs/ \
     --exclude "*" --include "*.thumbnail.jpg" --size-only
-aws s3 ls s3://ggm-thumbnails/ggm-thumbs/ --recursive | wc -l   # expect ~42,369
+# bucket public-read for the prefix:
+#   Block Public Access: BlockPublicPolicy=false, RestrictPublicBuckets=false
+#   bucket policy: Principal "*", s3:GetObject on  arn:aws:s3:::ggm-thumbnails/ggm-thumbs/*
+# site/app.js:
+#   const IMG_BASE = "https://ggm-thumbnails.s3.us-west-2.amazonaws.com/ggm-thumbs/";
 ```
 
-Keep the bucket **private** (Block all public access ON) — CloudFront reads it
-via Origin Access Control.
-
-**2. Create the CloudFront distribution** (console → Create distribution):
-
-- **Origin domain:** the S3 **REST** endpoint `ggm-thumbnails.s3.us-west-2.amazonaws.com` (not the "website endpoint").
-- **Origin access:** *Origin access control settings (recommended)* → create an OAC (defaults).
-- **Viewer protocol policy:** Redirect HTTP to HTTPS · **Methods:** GET, HEAD · **Cache policy:** CachingOptimized.
-- **Default root object:** leave blank.
-- Create, then **Copy policy** and paste it into S3 → bucket → Permissions → Bucket policy (grants this distribution `s3:GetObject`).
-
-**3. Test a real (URL-encoded) image** once status is *Deployed* — paste the URL
-this prints into a browser:
-
-```sh
-DIST=dXXXXXXXXXXXXX.cloudfront.net      # your distribution domain
-./.venv/bin/python - "$DIST" <<'PY'
-import json, sys, urllib.parse
-src = json.load(open("site/locations.json"))["groups"][0]["photos"][0]["src"]
-print(f"https://{sys.argv[1]}/ggm-thumbs/" +
-      "/".join(urllib.parse.quote(s) for s in src.split("/")))
-PY
-```
-
-**4. Point the site at CloudFront and publish:**
-
-```sh
-# in site/app.js:  const IMG_BASE = "https://dXXXXXXXXXXXXX.cloudfront.net/ggm-thumbs/";
-./.venv/bin/python build_site.py        # regenerate locations.json + extras.json
-# then publish site/ (HTML/CSS/JS + the two JSON manifests, ~9 MB) to GitHub Pages
-```
-
-Chain: **S3 (private) → CloudFront (OAC) → `<img>` on the Pages site.**
+> **CloudFront note (cautionary):** a private bucket + CloudFront **OAC** was
+> attempted and abandoned — S3 rejected the OAC-signed requests with `403 AccessDenied`
+> in a way that never resolved (even after recreating the OAC and removing it). The
+> public-read S3 endpoint works directly. For a CDN later, stand up a **fresh**
+> distribution with a *plain public-S3 origin* (no OAC) and repoint `IMG_BASE` at it.
 
 ---
 
@@ -179,7 +168,8 @@ Chain: **S3 (private) → CloudFront (OAC) → `<img>` on the Pages site.**
 | `master_list.py` | Per-photo census → `build/master_list.tsv` (included/excluded, status, locke, submosaic, location, nfd_differs). |
 | `build_authority.py` | Bootstrap/validate canonical names (variant-merge stats). Standalone — no dedup/recovery. |
 | `mine_prefixes.py` | Mine candidate connectives from parked photos. |
-| `deploy.sh` | Publish tiles to a `gh-pages` branch (for builds under the 1 GB Pages limit). |
+| `deploy_mosaic.sh` | Publish the DeepZoom mosaic (viewer + tiles) to `gh-pages`. |
+| `deploy_site.sh` | Publish the browse-site to `gh-pages`. |
 
 ## Artifacts (in `build/`, git-ignored)
 
@@ -200,13 +190,13 @@ Chain: **S3 (private) → CloudFront (OAC) → `<img>` on the Pages site.**
 | Flag | Default | Effect |
 |---|---|---|
 | `--photo-height` | 720 | Working height per photo (detail vs memory; source maxes ~1030). |
-| `--row-height` | 2800 | Justified row height — drives canvas size / pixels-per-photo. |
+| `--row-height` | 2200 | Justified row height — drives canvas size / pixels-per-photo. Default lands ~831 MB of tiles, under the 1 GB Pages cap. |
 | `--quality` | 90 | JPEG tile quality. |
 | `--no-dedup`, `--no-recover` | (off) | Disable de-duplication / wordspot recovery. |
 
 Detail vs. size: canvas size scales with `--row-height` (not `--photo-height`,
-which is free sharpness). Higher detail can exceed the 1 GB GitHub Pages cap → host
-the tiles on S3/CloudFront instead.
+which is free sharpness). Push `--row-height` higher for more detail, but past
+~2400 the tiles exceed the 1 GB Pages cap — then host them on S3 instead.
 
 ---
 
