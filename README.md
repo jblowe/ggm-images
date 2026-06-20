@@ -96,19 +96,56 @@ python3 -m http.server 8099
 #   http://localhost:8099/site/extras.html  (Maskarinec Extras)
 ```
 
-For **production**, set `IMG_BASE` to your CloudFront URL and host the images on
-S3/CloudFront (the existing thumbnails as-is — no regeneration):
-
-```sh
-# 1. thumbnails -> S3 (~2.6 GB)
-aws s3 sync ~/image_repos/ggm-images s3://<bucket>/<prefix>/ \
-    --exclude "*" --include "*.thumbnail.jpg"
-# 2. set IMG_BASE in site/app.js to  https://<cloudfront-domain>/<prefix>/
-# 3. publish site/ (HTML/CSS/JS + the two JSON manifests, ~9 MB) to GitHub Pages
-```
-
 Files: `build_site.py`, `site/{index,extras}.html`, `site/style.css`, `site/app.js`.
 Generated / git-ignored: `site/locations.json`, `site/extras.json`, `site/imgbase`.
+
+### Deploying to production (images on S3 + CloudFront, site on Pages)
+
+Host the **existing thumbnails as-is** (no regeneration) on S3 behind CloudFront,
+and the lightweight site on GitHub Pages. The `<img>` tags load images
+cross-origin from CloudFront, which needs **no CORS** config.
+
+**1. Sync the thumbnails to S3** (idempotent; ~2.6 GB, ~42k objects):
+
+```sh
+aws s3 sync ~/image_repos/ggm-images s3://ggm-thumbnails/ggm-thumbs/ \
+    --exclude "*" --include "*.thumbnail.jpg" --size-only
+aws s3 ls s3://ggm-thumbnails/ggm-thumbs/ --recursive | wc -l   # expect ~42,369
+```
+
+Keep the bucket **private** (Block all public access ON) — CloudFront reads it
+via Origin Access Control.
+
+**2. Create the CloudFront distribution** (console → Create distribution):
+
+- **Origin domain:** the S3 **REST** endpoint `ggm-thumbnails.s3.us-west-2.amazonaws.com` (not the "website endpoint").
+- **Origin access:** *Origin access control settings (recommended)* → create an OAC (defaults).
+- **Viewer protocol policy:** Redirect HTTP to HTTPS · **Methods:** GET, HEAD · **Cache policy:** CachingOptimized.
+- **Default root object:** leave blank.
+- Create, then **Copy policy** and paste it into S3 → bucket → Permissions → Bucket policy (grants this distribution `s3:GetObject`).
+
+**3. Test a real (URL-encoded) image** once status is *Deployed* — paste the URL
+this prints into a browser:
+
+```sh
+DIST=dXXXXXXXXXXXXX.cloudfront.net      # your distribution domain
+./.venv/bin/python - "$DIST" <<'PY'
+import json, sys, urllib.parse
+src = json.load(open("site/locations.json"))["groups"][0]["photos"][0]["src"]
+print(f"https://{sys.argv[1]}/ggm-thumbs/" +
+      "/".join(urllib.parse.quote(s) for s in src.split("/")))
+PY
+```
+
+**4. Point the site at CloudFront and publish:**
+
+```sh
+# in site/app.js:  const IMG_BASE = "https://dXXXXXXXXXXXXX.cloudfront.net/ggm-thumbs/";
+./.venv/bin/python build_site.py        # regenerate locations.json + extras.json
+# then publish site/ (HTML/CSS/JS + the two JSON manifests, ~9 MB) to GitHub Pages
+```
+
+Chain: **S3 (private) → CloudFront (OAC) → `<img>` on the Pages site.**
 
 ---
 
