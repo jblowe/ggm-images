@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Maskarinec Extras — unplaced photos</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1 id="title">Maskarinec Extras</h1>
+    <span class="sub">unplaced photos, bundled by caption</span>
+    <span class="spacer"></span>
+    <a href="https://jblowe.github.io/ggm-mosaic/">Zoom mosaic ↗</a>
+    <a href="index.html">← By location</a>
+  </header>
+  <nav>
+    <input id="filter" type="search" placeholder="Filter bundles…" autocomplete="off">
+    <div id="nav-list"></div>
+  </nav>
+  <main id="stage"></main>
+</div>
+<div id="lb"><img alt=""><div class="cap"></div></div>
+<script src="app.js"></script>
+<script>initApp("extras.json");</script>
+</body>
+</html>
