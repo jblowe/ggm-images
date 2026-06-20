@@ -26,16 +26,24 @@ from __future__ import annotations
 import argparse
 import math
 import os
+import re
 import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 
+os.environ.setdefault("VIPS_CONCURRENCY", "4")   # fewer tile threads -> lower peak memory
 import pyvips
+
+# This is a single huge one-shot pipeline (11k+ images joined); the operation
+# cache only bloats memory here, so disable it to keep dzsave from OOMing.
+pyvips.cache_set_max(0)
+pyvips.cache_set_max_mem(0)
 
 from parse_names import Record
 from ggm_data import load_records, make_filelist, DEFAULT_LIST, DEFAULT_ROOT
 
 WHITE = [255, 255, 255]
+BORDER_COLOR = [150, 150, 150]      # thin submosaic frame
 
 MONTHS = {m: i for i, m in enumerate(
     ["january", "february", "march", "april", "may", "june", "july",
@@ -76,32 +84,36 @@ def chrono_key(r: Record):
 # rendering one block
 # ---------------------------------------------------------------------------
 
-def make_cell(path: str, cw: int, ch: int) -> pyvips.Image:
-    """Load a thumbnail, fit (no crop) inside cw x ch, pad to exactly cw x ch on white."""
-    img = pyvips.Image.thumbnail(path, cw, height=ch, size="down")
+def load_photo(path: str, h: int) -> pyvips.Image:
+    """Load a thumbnail scaled to height h, KEEPING its native width (no crop, no
+    letterbox padding). This is what kills the white bars around portrait photos."""
+    img = pyvips.Image.thumbnail(path, 100000, height=h, size="down")
     if img.bands == 1:
         img = img.colourspace("srgb")
     if img.hasalpha():
         img = img.flatten(background=WHITE)
     if img.bands == 4:
         img = img[0:3]
-    x = (cw - img.width) // 2
-    y = (ch - img.height) // 2
-    return img.embed(x, y, cw, ch, extend="background", background=WHITE)
+    return img
 
 
-def make_label(text: str, width: int, height: int, font: str) -> pyvips.Image:
-    """Black sans-serif text on a white band of the given size (3-band sRGB)."""
-    pad = max(8, height // 8)
-    # Image.text parses Pango markup, so escape &, <, >
+def text_strip(text: str, width: int, height: int, font: str,
+               bg: int = 255, pad: int | None = None,
+               center: bool = False) -> pyvips.Image:
+    """Black text on a flat gray-`bg` band (255=white), 3-band sRGB. `center`
+    horizontally centers the text (labels); otherwise it is left-justified
+    (per-photo captions)."""
+    if pad is None:
+        pad = max(3, height // 10)
     safe = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     txt = pyvips.Image.text(
         safe, width=max(1, width - 2 * pad), height=max(1, height - 2 * pad),
-        font=font, align="low")                       # 1-band alpha mask, 0..255
+        font=font, align="centre" if center else "low")  # 1-band mask, 0..255
+    x = max(0, (width - txt.width) // 2) if center else pad
     y = max(0, (height - txt.height) // 2)
-    alpha = txt.embed(pad, y, width, height, extend="black")  # mask on full band
-    gray = (255 - alpha).cast("uchar")                 # white bg, black text
-    return gray.bandjoin([gray, gray]).copy(interpretation="srgb")
+    alpha = txt.embed(x, y, width, height, extend="black")  # mask on full band
+    lvl = ((255 - alpha).cast("float") * (bg / 255.0)).cast("uchar")  # bg, black text
+    return lvl.bandjoin([lvl, lvl]).copy(interpretation="srgb")
 
 
 @dataclass
@@ -115,9 +127,34 @@ class Block:
         return len(self.records)
 
 
+def _clean_name(s: str) -> str:
+    """Drop a leading number token ('90 Musum Bāhā' -> 'Musum Bāhā')."""
+    return re.sub(r"^\d+\s+", "", s).strip(" ,-")
+
+
+def _name_score(s: str) -> tuple:
+    """How place-name-like a location string is (higher is better)."""
+    return (
+        1 if re.search(r"[^\W\d_]", s) else 0,    # contains a letter
+        0 if re.search(r"\d{4}", s) else 1,       # no embedded 4-digit year
+        0 if s[:1].isdigit() else 1,              # doesn't start with a digit
+    )
+
+
+def pick_canonical(recs, locke: str) -> str:
+    """Canonical name = the most-frequent location string that looks most like a
+    place name (letters, no leading digit, no embedded year), with a leading
+    number token stripped. Falls back to the Locke if there are no locations."""
+    names = Counter(r.location for r in recs if r.location)
+    if not names:
+        return locke
+    best = max(names.items(), key=lambda kv: (_name_score(kv[0]), kv[1]))[0]
+    return _clean_name(best) or best
+
+
 def build_locke_groups(records: list[Record]) -> list[Block]:
-    """Group locked photos by Locke number; canonical name = most frequent
-    location string; sort blocks alphabetically by canonical name."""
+    """Group locked photos by Locke number; pick a clean canonical name; sort
+    blocks alphabetically by canonical name."""
     by_locke: dict[str, list] = defaultdict(list)
     for r in records:
         if r.lockenumber:
@@ -125,101 +162,121 @@ def build_locke_groups(records: list[Record]) -> list[Block]:
 
     blocks = []
     for locke, recs in by_locke.items():
-        names = Counter(r.location for r in recs if r.location)
-        canonical = names.most_common(1)[0][0] if names else locke
+        canonical = pick_canonical(recs, locke)
         blocks.append(Block(label=f"{canonical} ({locke})",
                             sortkey=canonical.lower(), records=recs))
     blocks.sort(key=lambda b: (b.sortkey, b.label))
     return blocks
 
 
-def make_block(block: Block, cw: int, ch: int, gap: int,
-               label_h: int, font: str) -> pyvips.Image:
-    """Render one Locke's sub-mosaic: square-ish grid of cells + label on top."""
-    recs = sorted(block.records, key=chrono_key)
-    n = len(recs)
-    # square-ish in PIXELS: account for cell aspect ratio
-    cols = max(1, round(math.sqrt(n * ch / cw)))
-    rows = math.ceil(n / cols)
-
-    cells = [make_cell(r.file, cw, ch) for r in recs]
-    # pad last row to a full rectangle so arrayjoin is clean
-    while len(cells) < cols * rows:
-        cells.append((pyvips.Image.black(cw, ch) + WHITE).copy(interpretation="srgb").cast("uchar"))
-
-    grid = pyvips.Image.arrayjoin(cells, across=cols, shim=gap,
-                                  background=WHITE, halign="centre", valign="centre")
-    block_w = grid.width
-    label = make_label(block.label, block_w, label_h, font)
-    return pyvips.Image.arrayjoin([label, grid], across=1, background=WHITE)
-
-
 # ---------------------------------------------------------------------------
-# shelf packing
+# justified packing -- used at BOTH levels (photos->block, blocks->canvas)
 # ---------------------------------------------------------------------------
 
-def pack_justified(sizes, target_ar, gap, row_h):
-    """Justified-rows ('Flickr') layout, preserving the given (alphabetical) order.
-    Each row is scaled so its blocks share a common height and fill canvas_w edge
-    to edge -- no wasted whitespace. Because rows are filled, total area is
-    conserved, so canvas_w = sqrt(total_area * target_ar) lands the aspect ratio.
+def justified_rows(aspects, row_h, target_ar, gap):
+    """Lay items (given width/height aspect ratios, in order) into justified rows:
+    items in a row share a height and fill the row width edge-to-edge -- no
+    letterbox, no gaps beyond `gap`. The overall width is chosen so the result
+    approximates target_ar. Returns (rows, width, height); each row is a list of
+    (index, w, h)."""
+    if not aspects:
+        return [], 1, 1
+    total_ar = sum(aspects)
+    target_w = max(round(row_h * math.sqrt(total_ar * target_ar)),
+                   round(max(aspects) * row_h))
 
-    Returns (rows, canvas_w, canvas_h) where each row is a list of
-    (block_index, scaled_w, scaled_h)."""
-    # Justified rows rescale block heights to ~row_h, so area is NOT conserved;
-    # the invariant is the sum of aspect ratios. With R rows of height row_h and
-    # ~canvas_w/row_h aspect-units per row, AR = canvas_w/(R*row_h) works out to
-    # target_ar when canvas_w = row_h * sqrt(total_aspect * target_ar).
-    total_aspect = sum(w / h for w, h in sizes)
-    canvas_w = max(round(row_h * math.sqrt(total_aspect * target_ar)),
-                   max(round((w / h) * row_h) for w, h in sizes))
+    def close(idxs, last):
+        avail = target_w - gap * (len(idxs) - 1)
+        s = sum(aspects[i] for i in idxs)
+        h = row_h if last else max(1, round(avail / s))
+        return [(i, max(1, round(aspects[i] * h)), h) for i in idxs]
 
-    def justify(cur, last):
-        n = len(cur)
-        avail = canvas_w - gap * (n - 1)
-        aspect_sum = sum(w / h for _, w, h in cur)
-        h = row_h if last else max(1, round(avail / aspect_sum))
-        out, x = [], 0
-        for j, (i, w, hh) in enumerate(cur):
-            bw = max(1, round((w / hh) * h))
-            out.append((i, bw, h))
-        return out, h
-
-    rows, cur, asum = [], [], 0.0
-    for i, (w, h) in enumerate(sizes):
-        cur.append((i, w, h))
-        asum += w / h
-        if row_h * asum + gap * (len(cur) - 1) >= canvas_w:
-            rows.append(justify(cur, last=False))
-            cur, asum = [], 0.0
+    rows, cur, s = [], [], 0.0
+    for i, ar in enumerate(aspects):
+        cur.append(i)
+        s += ar
+        if row_h * s + gap * (len(cur) - 1) >= target_w:
+            rows.append(close(cur, False))
+            cur, s = [], 0.0
     if cur:
-        rows.append(justify(cur, last=True))
-
-    laid = [r for r, _h in rows]
-    canvas_h = sum(h for _r, h in rows) + gap * (len(rows) - 1)
-    return laid, canvas_w, canvas_h
+        rows.append(close(cur, True))
+    width = max(sum(w for _, w, _ in r) + gap * (len(r) - 1) for r in rows)
+    height = sum(r[0][2] for r in rows) + gap * (len(rows) - 1)
+    return rows, width, height
 
 
 def fit(img: pyvips.Image, w: int, h: int) -> pyvips.Image:
-    """Resize img to exactly w x h."""
     out = img.resize(w / img.width, vscale=h / img.height)
     if out.width != w or out.height != h:           # correct rounding drift
         out = out.embed(0, 0, w, h, extend="background", background=WHITE)
     return out
 
 
-def assemble(blocks: list[pyvips.Image], rows, canvas_w: int, gap: int) -> pyvips.Image:
-    """Resize each block to its justified size, hconcat into row strips, vconcat."""
-    strips = []
-    for row in rows:                                 # row: [(idx, w, h), ...]
-        sized = [fit(blocks[i], w, h) for i, w, h in row]
-        strip = pyvips.Image.arrayjoin(sized, across=len(sized), shim=gap,
-                                       background=WHITE, valign="low")
-        if strip.width != canvas_w:
-            strip = strip.embed(0, 0, canvas_w, strip.height,
-                                extend="background", background=WHITE)
-        strips.append(strip)
-    return pyvips.Image.arrayjoin(strips, across=1, shim=gap, background=WHITE)
+def _cat(imgs, direction, gap):
+    """True concatenation of differently-sized images (NOT arrayjoin, which forces
+    uniform cells). `shim` inserts the gap; align low = top/left."""
+    out = imgs[0]
+    for im in imgs[1:]:
+        out = out.join(im, direction, shim=gap, expand=True,
+                       background=WHITE, align="low")
+    return out
+
+
+def _hjoin(imgs, gap):
+    return _cat(imgs, "horizontal", gap)
+
+
+def _vjoin(imgs, gap):
+    return _cat(imgs, "vertical", gap)
+
+
+def render_rows(images, rows, width, gap) -> pyvips.Image:
+    """Resize each image to its (w,h) and assemble the justified rows."""
+    strips = [_hjoin([fit(images[i], w, h) for i, w, h in r], gap) for r in rows]
+    return _vjoin(strips, gap)
+
+
+def photo_unit(rec: Record, photo_h: int, cap_h: int, cap_font: str) -> pyvips.Image:
+    """A photo with its filename (minus .thumbnail.jpg) as a tiny caption below."""
+    img = load_photo(rec.file, photo_h)
+    cap = text_strip(rec.title, img.width, cap_h, cap_font, bg=255, pad=2)
+    return _vjoin([img, cap], 1)
+
+
+def make_grid(block: Block, photo_h: int, cap_h: int, cap_font: str,
+              gap: int) -> pyvips.Image:
+    """One Locke's sub-mosaic: each photo (+caption) at uniform height & native
+    width, justified into a square-ish block. No letterbox; `gap` px between photos."""
+    recs = sorted(block.records, key=chrono_key)
+    units = [photo_unit(r, photo_h, cap_h, cap_font) for r in recs]
+    aspects = [u.width / u.height for u in units]
+    unit_h = photo_h + 1 + cap_h
+    rows, w, _h = justified_rows(aspects, unit_h, target_ar=1.0, gap=gap)
+    return render_rows(units, rows, w, gap)
+
+
+def frame(img, border, margin, border_color):
+    """1px (or `border`px) line around img, then a white margin all around."""
+    b = img.embed(border, border, img.width + 2 * border, img.height + 2 * border,
+                  extend="background", background=border_color)
+    return b.embed(margin, margin, b.width + 2 * margin, b.height + 2 * margin,
+                   extend="background", background=WHITE)
+
+
+def assemble_canvas(grids, blocks, rows, label_h, label_font, label_bg,
+                    border, margin, border_color) -> pyvips.Image:
+    """Each block = constant-size light-gray label over its (scaled) photo grid,
+    wrapped in a thin border + margin; blocks justified into rows."""
+    out = []
+    for r in rows:
+        units = []
+        for i, w, h in r:
+            lab = text_strip(blocks[i].label, w, label_h, label_font,
+                             bg=label_bg, center=True)
+            grid = fit(grids[i], w, max(1, h - label_h))
+            units.append(frame(_vjoin([lab, grid], 0), border, margin, border_color))
+        out.append(_hjoin(units, 0))           # margins already space the blocks
+    return _vjoin(out, 0)
 
 
 # ---------------------------------------------------------------------------
@@ -233,19 +290,25 @@ def main() -> None:
     ap.add_argument("--filelist", default=DEFAULT_LIST, help="master file list")
     ap.add_argument("--refresh", action="store_true", help="regenerate the file list first")
     ap.add_argument("--out", default="build/gm", help="output basename (-> <out>.dzi + <out>_files/)")
-    ap.add_argument("--cell", default="160x120", help="cell WxH pixels (no crop, fit+pad)")
-    ap.add_argument("--gap", type=int, default=2, help="gap between cells/blocks")
-    ap.add_argument("--label-h", type=int, default=80, help="label band height px")
-    ap.add_argument("--font", default="sans-serif bold 40", help="pango font for labels")
+    ap.add_argument("--photo-height", type=int, default=720,
+                    help="working height per photo (memory vs detail; source maxes ~1030)")
+    ap.add_argument("--photo-gap", type=int, default=4, help="gap between photos (px)")
+    ap.add_argument("--caption-h", type=int, default=22, help="per-photo filename caption height px")
+    ap.add_argument("--caption-font", default="sans-serif 12", help="pango font for captions")
+    ap.add_argument("--label-h", type=int, default=84, help="constant label height px")
+    ap.add_argument("--font", default="sans-serif bold 44", help="pango font for labels")
+    ap.add_argument("--label-bg", type=int, default=232, help="label background gray (255=white)")
+    ap.add_argument("--border", type=int, default=1, help="submosaic border width px")
+    ap.add_argument("--margin", type=int, default=3, help="white margin around each submosaic px")
     ap.add_argument("--aspect", default="16:9", help="target aspect ratio")
-    ap.add_argument("--row-height", type=int, default=1600,
+    ap.add_argument("--row-height", type=int, default=2800,
                     help="nominal justified row height px (controls #rows, not aspect)")
     ap.add_argument("--min-photos", type=int, default=1, help="skip Lockes with fewer photos (smoke test)")
+    ap.add_argument("--quality", type=int, default=90, help="JPEG quality for tiles")
     ap.add_argument("--tile-size", type=int, default=254)
     ap.add_argument("--overlap", type=int, default=1)
     args = ap.parse_args()
 
-    cw, ch = (int(x) for x in args.cell.lower().split("x"))
     aw, ah = (int(x) for x in args.aspect.split(":"))
     target_ar = aw / ah
 
@@ -258,27 +321,27 @@ def main() -> None:
     if args.min_photos > 1:
         groups = [g for g in groups if g.count >= args.min_photos]
     locked = sum(g.count for g in groups)
-    log(f"{locked} locked photos in {len(groups)} Locke blocks (cell {cw}x{ch})")
+    log(f"{locked} locked photos in {len(groups)} Locke blocks")
 
-    log("rendering blocks ...")
-    blocks, sizes = [], []
+    log("rendering blocks (photos justified, native width, captioned) ...")
+    grids = []
     for i, g in enumerate(groups, 1):
-        blk = make_block(g, cw, ch, args.gap, args.label_h, args.font)
-        blocks.append(blk)
-        sizes.append((blk.width, blk.height))
+        grids.append(make_grid(g, args.photo_height, args.caption_h,
+                               args.caption_font, args.photo_gap))
         if i % 100 == 0 or i == len(groups):
             log(f"  block {i}/{len(groups)}  ({g.label[:40]}: {g.count})")
 
-    rows, canvas_w, canvas_h = pack_justified(sizes, target_ar, args.gap, args.row_height)
-    log(f"packed into {len(rows)} rows -> canvas {canvas_w} x {canvas_h} "
-        f"(AR {canvas_w/canvas_h:.2f}, target {target_ar:.2f})")
-
-    canvas = assemble(blocks, rows, canvas_w, args.gap)
-    canvas = canvas.embed(0, 0, canvas_w, canvas_h, extend="background", background=WHITE)
+    aspects = [gr.width / gr.height for gr in grids]
+    block_gap = 2 * (args.border + args.margin)        # account for frame in packing
+    rows, canvas_w, _h = justified_rows(aspects, args.row_height, target_ar, block_gap)
+    canvas = assemble_canvas(grids, groups, rows, args.label_h, args.font,
+                             args.label_bg, args.border, args.margin, BORDER_COLOR)
+    log(f"packed into {len(rows)} rows -> canvas {canvas.width} x {canvas.height} "
+        f"(AR {canvas.width/canvas.height:.2f}, target {target_ar:.2f})")
 
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     log(f"dzsave -> {args.out}.dzi  (this streams the whole pipeline; be patient)")
-    canvas.dzsave(args.out, suffix=".jpg[Q=85]",
+    canvas.dzsave(args.out, suffix=f".jpg[Q={args.quality}]",
                   tile_size=args.tile_size, overlap=args.overlap)
     log("done.")
 

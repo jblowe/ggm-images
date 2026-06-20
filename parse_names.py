@@ -43,6 +43,11 @@ CITY_BY_LOCKE = (("K", "Kathmandu"), ("P", "Patan"), ("B", "Bhaktapur"))
 # date prefix:  YYYY [-] Month [DD] -    (whitespace already normalized to singles)
 # year may be 2 or 4 digits ("10 - October 24 - ...")
 DATE_RE = re.compile(r"^(\d{2,4}) ?-? ?([A-Za-z]+)\.? ?(\d{1,2})? ?-+ ?")
+# trailing date fragment to strip from a location ("Kwatu Bāhā, 12 Nov." ->
+# "Kwatu Bāhā"); handles "DD Mon" and "Mon DD", abbreviated or full, opt. comma.
+_MON = r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?"
+TRAIL_DATE = re.compile(
+    r"\s*,?\s*(?:\d{1,2}\s+" + _MON + r"|" + _MON + r"\s+\d{1,2})\s*$", re.IGNORECASE)
 # Locke catalog tokens are all K/P/B + digits (verified: max is 1-3 digits).
 # Tolerate a space inside ("K 14"->K14), a letter suffix ("K44e"->K44), and a
 # missing following space ("P113Nuga"->P113). Guard against false positives:
@@ -101,6 +106,14 @@ def parse_stem(stem: str):
         if pre == "" or any(pre.endswith(c) for c in CONNECTIVES):
             locke = lm.group(1) + lm.group(2)
             location = rest[lm.end():].strip(" -,")
+
+    # strip a trailing date fragment ("..., 12 Nov") left by date-at-end names
+    md_trail = TRAIL_DATE.search(location)
+    if md_trail:
+        location = location[:md_trail.start()].strip(" -,")
+        if not (month or day):
+            month_day = md_trail.group(0).strip(" ,")        # keep the date we found
+            return year, month_day, locke, location, imgnum
 
     month_day = f"{month} {day}".strip()
     return year, month_day, locke, location, imgnum

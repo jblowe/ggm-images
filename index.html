@@ -17,15 +17,22 @@
   <div id="osd"></div>
   <script src="openseadragon/openseadragon.min.js"></script>
   <script>
-    OpenSeadragon({
+    var viewer = OpenSeadragon({
       id: "osd",
       prefixUrl: "openseadragon/images/",
       tileSources: "gm.dzi",
       showNavigator: true,
       navigatorPosition: "BOTTOM_RIGHT",
-      minZoomImageRatio: 0.5,
+      homeFillsViewport: false,    // contain, never crop the edges
+      minZoomImageRatio: 0.2,      // allow zooming out past fit
       maxZoomPixelRatio: 4,
-      gestureSettingsMouse: { clickToZoom: true, dblClickToZoom: true }
+      visibilityRatio: 1,
+      constrainDuringPan: true,
+      gestureSettingsMouse: { clickToZoom: false, dblClickToZoom: true }
+    });
+    // Fit the entire mosaic on open, regardless of window aspect ratio.
+    viewer.addHandler("open", function () {
+      viewer.viewport.fitBounds(viewer.world.getItemAt(0).getBounds(), true);
     });
   </script>
 </body>
