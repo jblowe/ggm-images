@@ -14,3 +14,4 @@ __pycache__/
 /site/imgbase
 /site/locations.json
 /site/extras.json
+/nohup.out

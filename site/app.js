@@ -3,7 +3,9 @@
 //   dev  : a local symlink "imgbase" -> ~/image_repos/ggm-images
 //   prod : your CloudFront base, e.g. "https://dXXXX.cloudfront.net/ggm/thumbs/"
 // const IMG_BASE = "imgbase/";
-const IMG_BASE = "https://d3900tbyp16q24.cloudfront.net/ggm-thumbs/";
+// CloudFront distribution d3900tbyp16q24 is stuck (OAC signing); using the public
+// S3 endpoint directly for now. Swap back to a CloudFront URL once one works.
+const IMG_BASE = "https://ggm-thumbnails.s3.us-west-2.amazonaws.com/ggm-thumbs/";
 
 function imgUrl(src) {
   // encode each path segment (spaces, unicode, commas) but keep the slashes

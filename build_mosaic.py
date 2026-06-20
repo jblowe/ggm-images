@@ -444,7 +444,7 @@ def main() -> None:
     ap.add_argument("--border", type=int, default=1, help="submosaic border width px")
     ap.add_argument("--margin", type=int, default=3, help="white margin around each submosaic px")
     ap.add_argument("--aspect", default="16:9", help="target aspect ratio")
-    ap.add_argument("--row-height", type=int, default=2800,
+    ap.add_argument("--row-height", type=int, default=2200,    # ~831 MB tiles: fits the 1 GB Pages cap
                     help="nominal justified row height px (controls #rows, not aspect)")
     ap.add_argument("--min-photos", type=int, default=1, help="skip Lockes with fewer photos (smoke test)")
     ap.add_argument("--quality", type=int, default=90, help="JPEG quality for tiles")
