@@ -24,6 +24,7 @@ import json
 import os
 import re
 import sys
+import unicodedata
 from collections import defaultdict
 from dataclasses import dataclass, field, asdict
 
@@ -83,7 +84,9 @@ def parse_stem(stem: str):
     Whitespace is normalized first (fixes double-spaces around dashes). The Locke
     number is accepted even when preceded by locative text, provided that text
     ends with a known connective (see location_prefixes.txt)."""
-    s = re.sub(r"\s+", " ", stem).strip()
+    # Normalize to NFD so accented location strings compare/group/sort
+    # consistently regardless of how the filename was stored (NFC vs NFD).
+    s = unicodedata.normalize("NFD", re.sub(r"\s+", " ", stem).strip())
     # A leading date is optional: many names put it at the end ("..., 12 Nov.")
     # or omit it. Strip it when present; otherwise search the whole stem.
     md = DATE_RE.match(s)

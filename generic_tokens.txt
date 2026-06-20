@@ -1,0 +1,39 @@
+# Generic place-name tokens that must NOT, on their own, trigger a wordspot
+# recovery match. They're components shared by many sites (a "hiti" is any water
+# tap, "kumari" appears in several names), so a single-token match on them is
+# unreliable and produced false positives (e.g. "Kumari Ghar" -> "Kumārī Bāhā").
+#
+# A canonical whose ENTIRE distinctive signature is generic simply won't recover
+# parked photos (only its own Locke-tagged photos appear). That's the safe trade.
+#
+# One token per line, lowercase, accent-stripped (ā -> a). '#' comments ignored.
+# Edit freely, then rerun report.py / build_mosaic.py to regenerate recovered.tsv.
+
+# --- structural words (almost every name ends in one) ---
+caitya
+stupa
+mandir
+hiti
+ghat
+dhara
+sundhara
+pukhu
+chowk
+tole
+square
+durbar
+
+# --- generic deities / honorifics that recur across sites ---
+ganesh
+bhairav
+kumari
+bal
+narayan
+narasingh
+machendranath
+lokeswar
+
+# --- neighborhood / market names that aren't the bāhā ---
+asan
+basantapur
+indra

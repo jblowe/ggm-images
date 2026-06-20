@@ -28,8 +28,9 @@ import math
 import os
 import re
 import time
+import unicodedata
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 os.environ.setdefault("VIPS_CONCURRENCY", "4")   # fewer tile threads -> lower peak memory
 import pyvips
@@ -99,21 +100,45 @@ def load_photo(path: str, h: int) -> pyvips.Image:
 
 def text_strip(text: str, width: int, height: int, font: str,
                bg: int = 255, pad: int | None = None,
-               center: bool = False) -> pyvips.Image:
-    """Black text on a flat gray-`bg` band (255=white), 3-band sRGB. `center`
-    horizontally centers the text (labels); otherwise it is left-justified
-    (per-photo captions)."""
+               align: str = "left") -> pyvips.Image:
+    """Black text on a flat gray-`bg` band (255=white), 3-band sRGB.
+    align: 'left' (captions), 'center' (label name), or 'right' (count)."""
     if pad is None:
         pad = max(3, height // 10)
     safe = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     txt = pyvips.Image.text(
         safe, width=max(1, width - 2 * pad), height=max(1, height - 2 * pad),
-        font=font, align="centre" if center else "low")  # 1-band mask, 0..255
-    x = max(0, (width - txt.width) // 2) if center else pad
+        font=font, align="low")                        # 1-band mask; we place it ourselves
+    if align == "center":
+        x = max(0, (width - txt.width) // 2)
+    elif align == "right":
+        x = max(0, width - pad - txt.width)
+    else:
+        x = pad
     y = max(0, (height - txt.height) // 2)
     alpha = txt.embed(x, y, width, height, extend="black")  # mask on full band
     lvl = ((255 - alpha).cast("float") * (bg / 255.0)).cast("uchar")  # bg, black text
     return lvl.bandjoin([lvl, lvl]).copy(interpretation="srgb")
+
+
+def make_header(name: str, count: int, width: int, height: int, font: str,
+                bg: int) -> pyvips.Image:
+    """Header band: name centered; 'NNN photos' right-justified in an opaque box
+    inserted over the right edge (so a long name is cleanly clipped by the count,
+    never overlapping glyphs)."""
+    pad = max(3, height // 10)
+    name_full = text_strip(name, width, height, font, bg=bg, align="center")
+
+    # render the count at its natural single-line size (no width/height args, which
+    # would wrap or mis-size it)
+    txt = pyvips.Image.text(f"{count} photos", font=font)
+    boxw = min(txt.width + 2 * pad, max(1, width // 2))
+    x = max(0, boxw - pad - txt.width)
+    y = max(0, (height - txt.height) // 2)
+    alpha = txt.embed(x, y, boxw, height, extend="black")
+    lvl = ((255 - alpha).cast("float") * (bg / 255.0)).cast("uchar")  # bg, black text
+    box = lvl.bandjoin([lvl, lvl]).copy(interpretation="srgb")
+    return name_full.insert(box, width - boxw, 0).copy(interpretation="srgb")
 
 
 @dataclass
@@ -125,6 +150,64 @@ class Block:
     @property
     def count(self):
         return len(self.records)
+
+
+# --- accent-insensitive matching helpers (dedup + wordspot recovery) ---
+
+def _astrip(s: str) -> str:
+    """Accent-strip, lowercase, punctuation->space, collapse (for fuzzy match)."""
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", s.lower())).strip()
+
+
+# structural / directional words that are never a distinctive name token
+_BASE_STOP = {
+    "the", "of", "a", "an", "to", "from", "at", "in", "on", "and", "near", "by",
+    "with", "north", "south", "east", "west", "northeast", "northwest",
+    "southeast", "southwest", "upper", "lower", "inner", "outer", "old", "new",
+    "main", "baha", "bahi", "bahica", "bahical", "temple", "shrine", "courtyard",
+    "entrance", "outside", "inside", "detail", "part", "remains", "toward",
+    "towards", "searching", "looking", "possibly", "small", "large", "shrine",
+    "side", "front", "behind", "between", "above", "below", "atop",
+}
+
+_GENERIC_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "generic_tokens.txt")
+
+
+def _load_generic(path: str = _GENERIC_FILE) -> set[str]:
+    out = set()
+    try:
+        for line in open(path, encoding="utf-8"):
+            line = line.strip()
+            if line and not line.startswith("#"):
+                out.add(line.lower())
+    except FileNotFoundError:
+        pass
+    return out
+
+
+SIG_STOP = _BASE_STOP | _load_generic()
+
+
+def _toks(s: str) -> frozenset:
+    """Distinctive tokens of a string (len>=3, not a stop/generic word)."""
+    return frozenset(t for t in _astrip(s).split()
+                     if len(t) >= 3 and t not in SIG_STOP)
+
+
+def dedup_records(records: list[Record]) -> list[Record]:
+    """Drop duplicate copies of the same photo across collections, keyed on the
+    accent-insensitive filename stem (so 'Kwā Bāhā 42' == 'Kwa Bāhā 42'). Keeps a
+    copy that parsed a Locke over one that didn't."""
+    best: dict[str, Record] = {}
+    for r in records:
+        k = _astrip(r.title)
+        cur = best.get(k)
+        if cur is None or (r.lockenumber and not cur.lockenumber):
+            best[k] = r
+    return list(best.values())
 
 
 def _clean_name(s: str) -> str:
@@ -152,19 +235,79 @@ def pick_canonical(recs, locke: str) -> str:
     return _clean_name(best) or best
 
 
-def build_locke_groups(records: list[Record]) -> list[Block]:
-    """Group locked photos by Locke number; pick a clean canonical name; sort
-    blocks alphabetically by canonical name."""
+def recover_parked(records, blocks, out="build/recovered.tsv",
+                   parked_out="build/still_parked.txt"):
+    """Second pass: assign a parked (no-Locke) photo to a Locke when a canonical
+    name's distinctive-token signature is a subset of the photo's location tokens
+    ('near Kwā Bāhā' -> Kwā Bāhā). Ambiguous ties are skipped. Returns COPIES of
+    matched records promoted to their Locke. Writes two review files:
+      out         -- what got recovered (locke, canonical, location, filename)
+      parked_out  -- what is STILL parked (location, filename) for further tuning."""
+    canon = []
+    for b in blocks:
+        name = b.label.rsplit(" (", 1)[0]
+        s = _toks(name)
+        if s:
+            canon.append((b.records[0].lockenumber, name, s))
+
+    recovered, rows, still = [], [], []
+    for r in records:
+        if r.lockenumber:                              # already in the mosaic
+            continue
+        matched = None
+        if r.location:
+            toks = _toks(r.location)
+            if toks:
+                cands = sorted(((len(s), lk, nm) for lk, nm, s in canon if s <= toks),
+                               reverse=True)
+                if cands and not (len(cands) > 1 and cands[0][0] == cands[1][0]
+                                  and cands[0][2] != cands[1][2]):
+                    matched = cands[0]
+        if matched:
+            _n, lk, nm = matched
+            recovered.append(replace(r, lockenumber=lk))
+            rows.append((lk, nm, r.location, r.title))
+        else:
+            still.append((r.location, r.title))
+
+    if out:
+        os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+        with open(out, "w", encoding="utf-8") as f:
+            f.write("locke\tcanonical\tparked_location\tfilename\n")
+            for lk, nm, loc, title in sorted(rows):
+                f.write(f"{lk}\t{nm}\t{loc}\t{title}\n")
+    if parked_out:
+        os.makedirs(os.path.dirname(parked_out) or ".", exist_ok=True)
+        with open(parked_out, "w", encoding="utf-8") as f:
+            f.write("location\tfilename\n")
+            for loc, title in sorted(still):           # bare-location rows sort first
+                f.write(f"{loc}\t{title}\n")
+    return recovered
+
+
+def build_locke_groups(records: list[Record], dedup=True, recover=True,
+                       recovered_out="build/recovered.tsv") -> list[Block]:
+    """Dedup copies, group locked photos by Locke (clean canonical name), then
+    (optionally) recover parked photos via wordspotting; sort alphabetically."""
+    if dedup:
+        records = dedup_records(records)
+
     by_locke: dict[str, list] = defaultdict(list)
     for r in records:
         if r.lockenumber:
             by_locke[r.lockenumber].append(r)
 
-    blocks = []
+    blocks, by_lk = [], {}
     for locke, recs in by_locke.items():
         canonical = pick_canonical(recs, locke)
-        blocks.append(Block(label=f"{canonical} ({locke})",
-                            sortkey=canonical.lower(), records=recs))
+        b = Block(label=f"{canonical} ({locke})", sortkey=canonical.lower(), records=recs)
+        blocks.append(b)
+        by_lk[locke] = b
+
+    if recover:
+        for r in recover_parked(records, blocks, recovered_out):
+            by_lk[r.lockenumber].records.append(r)
+
     blocks.sort(key=lambda b: (b.sortkey, b.label))
     return blocks
 
@@ -271,8 +414,8 @@ def assemble_canvas(grids, blocks, rows, label_h, label_font, label_bg,
     for r in rows:
         units = []
         for i, w, h in r:
-            lab = text_strip(blocks[i].label, w, label_h, label_font,
-                             bg=label_bg, center=True)
+            lab = make_header(blocks[i].label, blocks[i].count, w, label_h,
+                              label_font, label_bg)
             grid = fit(grids[i], w, max(1, h - label_h))
             units.append(frame(_vjoin([lab, grid], 0), border, margin, border_color))
         out.append(_hjoin(units, 0))           # margins already space the blocks

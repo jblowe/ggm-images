@@ -11,7 +11,7 @@ import os
 from collections import Counter
 
 from ggm_data import load_records, make_filelist, DEFAULT_LIST, DEFAULT_ROOT
-from build_mosaic import build_locke_groups
+from build_mosaic import build_locke_groups, dedup_records
 
 CITY = {"K": "Kathmandu", "P": "Patan", "B": "Bhaktapur"}
 OUT = "build/report.md"
@@ -22,12 +22,17 @@ def main():
         make_filelist(DEFAULT_ROOT, DEFAULT_LIST)
     records = load_records(DEFAULT_LIST, DEFAULT_ROOT)
     total = len(records)
-    blocks = build_locke_groups(records)          # only locked photos
+    deduped = dedup_records(records)
+    n_dedup = len(deduped)
+    blocks = build_locke_groups(records)          # dedup + Locke groups + recovery
     included = sum(b.count for b in blocks)
-    excluded = total - included
+    recovered = sum(1 for _ in open("build/recovered.tsv", encoding="utf-8")) - 1 \
+        if os.path.exists("build/recovered.tsv") else 0
+    locked = included - recovered
+    excluded = n_dedup - included                 # parked, on the deduped basis
 
-    # excluded breakdown: has a location string vs truly bare
-    parked = [r for r in records if not r.lockenumber]
+    # excluded breakdown: has a location string vs truly bare (deduped, unmatched)
+    parked = [r for r in deduped if not r.lockenumber]
     parked_named = sum(1 for r in parked if r.location)
     by_city = Counter(CITY.get(b.records[0].lockenumber[0], "?") for b in blocks)
     city_photos = Counter()
@@ -39,11 +44,12 @@ def main():
         w = f.write
         w("# Gregory Maskarinec Photo Archive — mosaic report\n\n")
         w(f"- **Total thumbnails:** {total:,}\n")
-        w(f"- **Included (have a Locke number):** {included:,} "
-          f"({100*included/total:.1f}%) in **{len(blocks)} Locke sub-mosaics**\n")
-        w(f"- **Excluded (no Locke, parked):** {excluded:,} "
-          f"({100*excluded/total:.1f}%) — of which {parked_named:,} have a "
-          f"location string (recoverable later), {len(parked)-parked_named:,} are bare\n\n")
+        w(f"- **After de-duplication:** {n_dedup:,} (removed {total-n_dedup:,} copies)\n")
+        w(f"- **Included in mosaic:** {included:,} in **{len(blocks)} Locke sub-mosaics** "
+          f"— {locked:,} Locke-tagged + {recovered:,} recovered via wordspotting\n")
+        w(f"- **Excluded (parked):** {excluded:,} — of which {parked_named:,} have a "
+          f"location string (candidates for more recovery), {len(parked)-parked_named:,} "
+          f"are bare\n\n")
 
         w("## By city (from Locke prefix)\n\n")
         w("| City | Lockes | Photos |\n|---|--:|--:|\n")
