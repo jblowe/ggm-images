@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Maskarinec Photo Archive — by location</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1 id="title">Maskarinec Photo Archive</h1>
+    <span class="sub">grouped by location</span>
+    <span class="spacer"></span>
+    <a href="extras.html">Maskarinec Extras →</a>
+  </header>
+  <nav>
+    <input id="filter" type="search" placeholder="Filter locations…" autocomplete="off">
+    <div id="nav-list"></div>
+  </nav>
+  <main id="stage"></main>
+</div>
+<div id="lb"><img alt=""><div class="cap"></div></div>
+<script src="app.js"></script>
+<script>initApp("locations.json");</script>
+</body>
+</html>

@@ -11,3 +11,6 @@ __pycache__/
 # symlinks to the build artifacts, and scratch output (all regenerable)
 /gm_files
 /location_prefixes_candidates.txt
+/site/imgbase
+/site/locations.json
+/site/extras.json

@@ -67,6 +67,51 @@ images ─▶ ggm_data(filelist) ─▶ parse_names(fields) ─▶ build_locke_g
 
 ---
 
+## Browse site (static HTML — alternative to the zoom-mosaic)
+
+A lightweight 3-pane browser (header · location nav · masonry stage), generated as
+static files. It complements the DeepZoom mosaic: the mosaic is the impressive
+overview, this is the practical "pick a place, see its photos" tool. Two pages,
+cross-linked:
+
+- `site/index.html` — the **290 Locke sub-mosaics** (the included photos); nav grouped by city, with a filter.
+- `site/extras.html` — **"Maskarinec Extras"**: the **24,078 parked** photos, bundled by parsed location text.
+
+Together they cover all **36,313 unique** photos (the deduped set). Photos render as
+a CSS-columns masonry with captions and a click-to-zoom lightbox.
+
+Build the manifests (from the same pipeline — `build_locke_groups()`):
+
+```sh
+./.venv/bin/python build_site.py        # -> site/locations.json, site/extras.json
+```
+
+**Where the images come from** is `IMG_BASE` in `site/app.js`:
+
+```sh
+# DEV: symlink the repo so the local server can serve the thumbnails
+ln -sfn ~/image_repos/ggm-images site/imgbase
+python3 -m http.server 8099
+#   http://localhost:8099/site/index.html   (by location)
+#   http://localhost:8099/site/extras.html  (Maskarinec Extras)
+```
+
+For **production**, set `IMG_BASE` to your CloudFront URL and host the images on
+S3/CloudFront (the existing thumbnails as-is — no regeneration):
+
+```sh
+# 1. thumbnails -> S3 (~2.6 GB)
+aws s3 sync ~/image_repos/ggm-images s3://<bucket>/<prefix>/ \
+    --exclude "*" --include "*.thumbnail.jpg"
+# 2. set IMG_BASE in site/app.js to  https://<cloudfront-domain>/<prefix>/
+# 3. publish site/ (HTML/CSS/JS + the two JSON manifests, ~9 MB) to GitHub Pages
+```
+
+Files: `build_site.py`, `site/{index,extras}.html`, `site/style.css`, `site/app.js`.
+Generated / git-ignored: `site/locations.json`, `site/extras.json`, `site/imgbase`.
+
+---
+
 ## Tunable inputs (edit, then rerun)
 
 | File | Controls |
@@ -92,7 +137,9 @@ images ─▶ ggm_data(filelist) ─▶ parse_names(fields) ─▶ build_locke_g
 | `ggm_data.py` | Build/maintain `filelist.txt`; load+parse records. |
 | `parse_names.py` | Filename → fields (Locke, location, date, image #). |
 | `build_mosaic.py` | Dedup + group + recover + render the DeepZoom mosaic. |
+| `build_site.py` | Emit the static browse-site manifests (`site/locations.json`, `site/extras.json`). |
 | `report.py` | Census → `report.md`; refreshes `recovered.tsv`, `still_parked.txt`. |
+| `master_list.py` | Per-photo census → `build/master_list.tsv` (included/excluded, status, locke, submosaic, location, nfd_differs). |
 | `build_authority.py` | Bootstrap/validate canonical names (variant-merge stats). Standalone — no dedup/recovery. |
 | `mine_prefixes.py` | Mine candidate connectives from parked photos. |
 | `deploy.sh` | Publish tiles to a `gh-pages` branch (for builds under the 1 GB Pages limit). |
@@ -105,6 +152,8 @@ images ─▶ ggm_data(filelist) ─▶ parse_names(fields) ─▶ build_locke_g
 | `recovered.tsv` | Parked photos pulled into the mosaic by wordspotting (review). |
 | `still_parked.txt` | Photos still excluded (`location · filename`) — targets for further recovery tuning. |
 | `report.md` | Census: included/excluded, by city, per-Locke counts. |
+| `master_list.tsv` | Per-photo join: path, included, status, locke, submosaic, location, nfd_differs. |
+| `site/locations.json`, `site/extras.json` | Browse-site manifests (from `build_site.py`). |
 | `authority.tsv`, `authority_excluded.txt` | Output of `build_authority.py`. |
 
 ---
