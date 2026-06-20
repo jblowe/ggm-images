@@ -3,7 +3,7 @@
 //   dev  : a local symlink "imgbase" -> ~/image_repos/ggm-images
 //   prod : your CloudFront base, e.g. "https://dXXXX.cloudfront.net/ggm/thumbs/"
 // const IMG_BASE = "imgbase/";
-const IMG_BASE = "https://dE1NYF1RYWXF35G.cloudfront.net/ggm-thumbs/";
+const IMG_BASE = "https://d3900tbyp16q24.cloudfront.net/ggm-thumbs/";
 
 function imgUrl(src) {
   // encode each path segment (spaces, unicode, commas) but keep the slashes
