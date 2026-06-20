@@ -15,3 +15,4 @@ __pycache__/
 /site/locations.json
 /site/extras.json
 /nohup.out
+.idea/
